@@ -13,6 +13,10 @@
     T_DIRECT:  5,
     // 代理请求超时（秒）。落地查询走代理，适当给长些
     T_PROXY:   5,
+    // 探测请求超时（秒），用于显示直连 / 代理体感耗时
+    T_PROBE:   3,
+    // 轻量探测地址：只用来估算 HTTP 访问耗时，不参与 IP 信息判断
+    PROBE_URL: 'https://www.apple.com/library/test/success.html',
     // 每个数据源的最大重试次数（正式请求 + RETRIES 次重试）
     RETRIES:   1,
     // 首个数据源成功后，额外等待更优字段的时间（毫秒）
@@ -136,6 +140,24 @@
       const { requests = [] } = await new Promise(r => $httpAPI('GET', '/v1/requests/recent', null, r));
       return requests;
     } catch { return []; }
+  };
+
+  const probeLatency = async (label, opt = {}) => {
+    const started = Date.now();
+    try {
+      await httpGet({ url: CFG.PROBE_URL, timeout: CFG.T_PROBE, ...opt });
+      return { label, ms: Date.now() - started };
+    } catch {
+      return { label, ms: '' };
+    }
+  };
+
+  const queryProbe = async () => {
+    const [direct, proxy] = await Promise.all([
+      probeLatency('direct', { policy: 'DIRECT' }),
+      probeLatency('proxy', {}),
+    ]);
+    return { direct: direct.ms, proxy: proxy.ms };
   };
 
   // ══════════════════════════════════════════════════════
@@ -545,7 +567,8 @@
     const s = String(ip || '-').trim();
     return s.includes(':') ? clip(s, 20) : s;
   };
-  const latencyOf = info => Number.isFinite(info?.ms) ? `${info.ms}ms` : '';
+  const fmtMS = value => Number.isFinite(value) ? `${value}ms` : '';
+  const queryMSOf = info => Number.isFinite(info?.ms) ? `查${info.ms}ms` : '';
   const regionCityOf = info => {
     const region = info?.region || '';
     const city = info?.city || '';
@@ -571,7 +594,7 @@
   function block(label, section, fallbackIP = '') {
     const info = section?.info || null;
     const ip = compactIP(info?.ip || fallbackIP || '-');
-    const badge = compact([section?.cached ? '缓存' : '', latencyOf(info)]).join(' ') || stateOf(section);
+    const badge = compact([section?.cached ? '缓存' : '', queryMSOf(info)]).join(' ') || stateOf(section);
     const detail = compact([
       clip(briefPlaceOf(info), 14),
       clip(info?.isp, 11),
@@ -594,16 +617,22 @@
     const hopMode = data.entranceIP && landing.ip
       ? (data.entranceIP === landing.ip ? '直落' : '中转')
       : '';
-    const status = compact([countryMode, hopMode, cost]).join(' · ');
+    const probe = data.probe || {};
+    const status = compact([countryMode, hopMode, `总${cost}`]).join(' · ');
+    const probeLine = compact([
+      fmtMS(probe.direct) ? `直连${fmtMS(probe.direct)}` : '',
+      fmtMS(probe.proxy) ? `代理${fmtMS(probe.proxy)}` : '',
+    ]).join(' · ');
     const sections = [
       `${spin} 路线  ${routeNode('本地', data.local)} → ${routeNode('入口', data.entrance, data.entranceIP)} → ${routeNode('落地', data.landing)}`,
       `状态  ${status || cost}`,
+      probeLine ? `探测  ${probeLine}` : '',
       block('本地', data.local),
       block('入口', data.entrance, data.entranceIP),
       block('落地', data.landing),
       `更新  ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
     ];
-    return sections.join('\n\n');
+    return sections.filter(Boolean).join('\n\n');
   };
 
   // ══════════════════════════════════════════════════════
@@ -635,8 +664,8 @@
   // 保存当前入口 IP，供下次步骤 2 比对
   if (curEnt) $persistentStore.write(curEnt, KEY.ENT);
 
-  // 本地查询（直连）和落地查询（代理）完全独立，并发执行缩短总时间
-  const [local, landing] = await Promise.all([queryLocal(), queryLanding()]);
+  // 本地查询、落地查询、体感探测互相独立，并发执行缩短总时间
+  const [local, landing, probe] = await Promise.all([queryLocal(), queryLanding(), queryProbe()]);
 
   // ── 步骤 5：落地查询完成后重读记录，提取入口 IP ────────────────
   // queryLanding 向 ip.sb 发了一条代理请求，此时再读记录可以找到该请求的 remoteAddress
@@ -653,6 +682,10 @@
     landing:   pickInfo(landing, old.landing, !nodeChanged && cacheStale),
     entrance:  pickInfo(entrance, old.entrance, sameEntrance && cacheStale),
     entranceIP: entranceIP || old.entranceIP || '',
+    probe: {
+      direct: Number.isFinite(probe?.direct) ? probe.direct : old.probe?.direct,
+      proxy:  Number.isFinite(probe?.proxy)  ? probe.proxy  : old.probe?.proxy,
+    },
   };
 
   // 兼容旧版只有 content、没有 data 的缓存
