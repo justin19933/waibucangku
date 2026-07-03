@@ -1,7 +1,7 @@
 #!name=网络信息 Live
 #!desc=本地 / 入口 / 落地 IP 信息面板，多源 ASN/城市识别 + 精简节点视图 v20260704-6
 [Script]
-网络信息 Live = type=generic,timeout=20,script-path=https://cdn.jsdelivr.net/gh/justin19933/waibucangku@main/network-info-live-v2.js?v=20260704-6
+网络信息 Live = type=generic,timeout=20,script-path=https://cdn.jsdelivr.net/gh/justin19933/waibucangku/network-info-live-v2.js?v=20260704-6
 
 [Panel]
 网络信息 Live 面板 = script-name=网络信息 Live, update-interval=3
