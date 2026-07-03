@@ -20,7 +20,7 @@
     // 每个数据源的最大重试次数（正式请求 + RETRIES 次重试）
     RETRIES:   1,
     // 首个数据源成功后，额外等待更优字段的时间（毫秒）
-    SMART_GRACE: 450,
+    SMART_GRACE: 900,
     // 查询结果缓存有效期：2.5 秒；配合面板刷新显示近实时延迟
     CACHE_TTL: 2500,
     // 刷新失败时最多沿用 1 小时内的旧结果，避免好面板被空结果覆盖
@@ -95,8 +95,9 @@
       if (hasCN(loc)) return 2;
       return 1;
     };
+    const locDepth = info => String(info?.location || '').split(/[ /·]+/).filter(Boolean).length;
     const complete = info => !!(info?.ip && info?.location && info?.isp && info?.asn);
-    const ready = info => complete(info) && locQuality(info) >= 2;
+    const ready = info => complete(info) && locQuality(info) >= 2 && (info.countryCode !== 'CN' || locDepth(info) >= 2);
 
     const finish = force => {
       if (done) return;
@@ -210,6 +211,37 @@
     return String.fromCodePoint(...[...cc].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
   };
 
+  const GEO_ALIAS = {
+    shanghai: '上海',
+    pudong: '浦东',
+    beijing: '北京',
+    guangdong: '广东',
+    sichuan: '四川',
+    chengdu: '成都',
+    mianyang: '绵阳',
+    'mian yang': '绵阳',
+    'mian yang shi': '绵阳',
+    tokyo: '东京',
+    minamishinagawa: '南品川',
+    osaka: '大阪',
+    singapore: '新加坡',
+    hongkong: '香港',
+    'hong kong': '香港',
+  };
+
+  const geoName = value => {
+    const s = stripSfx(String(value || '').replace(/\bshi\b/ig, '').replace(/\s+/g, ' ').trim());
+    if (!s) return '';
+    return GEO_ALIAS[s.toLowerCase()] || s;
+  };
+
+  const inferGeoFromISP = raw => {
+    const s = String(raw || '').toLowerCase();
+    if (/oriental\s+cable|东方有线/.test(s)) return { region: '上海', city: '' };
+    if (/chinanet\s+sichuan|sctel|四川电信/.test(s)) return { region: '四川', city: '' };
+    return {};
+  };
+
   const cleanParts = parts => {
     const seen = new Set();
     return parts
@@ -225,8 +257,8 @@
    */
   const fmtLoc = (cc, country, region, city) => {
     const code = countryCodeOf(cc, country).toLowerCase();
-    const tR = stripSfx(region); // 省/州
-    const tC = stripSfx(city);   // 城市
+    const tR = geoName(region); // 省/州
+    const tC = geoName(city);   // 城市
     const parts = code === 'cn'
       ? [tR, tC]
       : [hasCN(country) ? country : countryName(code) || country || cc,
@@ -241,6 +273,7 @@
     [/china\s+telecom|chinanet|ct\s*net/i, '中国电信'],
     [/china\s+unicom|unicom/i, '中国联通'],
     [/china\s+mobile|cmcc|cmi/i, '中国移动'],
+    [/oriental\s+cable|shanghai\s+oriental/i, '东方有线'],
     [/cloudflare/i, 'Cloudflare'],
     [/akamai/i, 'Akamai'],
     [/amazon|aws/i, 'AWS'],
@@ -302,8 +335,8 @@
     if (d?.ret !== 'ok' || !d.data?.ip) return null;
     const L = d.data.location || [];
     const country = L[0] || '';
-    const region = stripSfx(L[1] || '');
-    const city = stripSfx(L[2] || '');
+    const region = geoName(L[1] || '');
+    const city = geoName(L[2] || '');
     // L[0]=国家, L[1]=省, L[2]=市, L[3]=运营商, L[4]=邮编, L[5]=时区 ...
     return {
       ip:       d.data.ip,
@@ -325,14 +358,19 @@
   const parseIPAPI = d => {
     if (d?.status !== 'success') return null;
     const countryCode = countryCodeOf(d.countryCode, d.country);
+    const rawISP = `${d.isp || ''} ${d.org || ''} ${d.asname || ''} ${d.as || ''}`;
+    const isp = fmtISP(rawISP);
+    const inferred = inferGeoFromISP(rawISP);
+    const region = geoName(d.regionName || inferred.region || '');
+    const city = geoName(d.city || inferred.city || '');
     return {
       ip:       d.query || '',
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
-      region:   stripSfx(d.regionName || ''),
-      city:     stripSfx(d.city || ''),
-      location: fmtLoc(d.countryCode, d.country, d.regionName, d.city),
-      isp:      fmtISP(`${d.isp || ''} ${d.as || ''}`),
+      region,
+      city,
+      location: fmtLoc(d.countryCode, d.country, region, city),
+      isp,
       asn:      fmtASN((d.as || '').match(/\b(AS\d+)\b/i)?.[1]),
     };
   };
@@ -345,8 +383,8 @@
    */
   const parseUAI = d => {
     if (!d?.ip) return null;
-    const province = d.province ? stripSfx(d.province) : '';
-    const city     = d.city     ? stripSfx(d.city)     : '';
+    const province = d.province ? geoName(d.province) : '';
+    const city     = d.city     ? geoName(d.city)     : '';
     const countryCode = countryCodeOf('', d.country || '中国');
     return {
       ip:       d.ip,
@@ -368,15 +406,44 @@
   const parseIPSB = d => {
     if (!d?.ip) return null;
     const countryCode = countryCodeOf(d.country_code, d.country);
+    const rawISP = `${d.isp || ''} ${d.organization || ''} ${d.asn_organization || ''}`;
+    const inferred = inferGeoFromISP(rawISP);
+    const region = geoName(d.region || inferred.region || '');
+    const city = geoName(d.city || inferred.city || '');
     return {
       ip:       d.ip,
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
-      region:   stripSfx(d.region || ''),
-      city:     stripSfx(d.city || ''),
-      location: fmtLoc(d.country_code, d.country, d.region, d.city),
-      isp:      fmtISP(`${d.isp || ''} ${d.organization || ''}`),
+      region,
+      city,
+      location: fmtLoc(d.country_code, d.country, region, city),
+      isp:      fmtISP(rawISP),
       asn:      fmtASN(d.asn),
+    };
+  };
+
+  /**
+   * 解析 ipwho.is
+   * 强项：HTTPS，能同时给出城市、ASN、运营商；对入口 IP 补城市很有用
+   * 响应格式：{ ip, success, country, country_code, region, city, connection:{ asn, org, isp } }
+   */
+  const parseIPWHO = d => {
+    if (!d?.success || !d.ip) return null;
+    const countryCode = countryCodeOf(d.country_code, d.country);
+    const conn = d.connection || {};
+    const rawISP = `${conn.org || ''} ${conn.isp || ''}`;
+    const inferred = inferGeoFromISP(rawISP);
+    const region = geoName(d.region || inferred.region || '');
+    const city = geoName(d.city || inferred.city || '');
+    return {
+      ip:       d.ip,
+      countryCode,
+      country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
+      region,
+      city,
+      location: fmtLoc(d.country_code, d.country, region, city),
+      isp:      fmtISP(rawISP),
+      asn:      fmtASN(conn.asn),
     };
   };
 
@@ -392,8 +459,8 @@
       ip:       d.ip,
       countryCode,
       country:  countryName(countryCode),
-      region:   stripSfx(d.region || ''),
-      city:     stripSfx(d.city || ''),
+      region:   geoName(d.region || ''),
+      city:     geoName(d.city || ''),
       location: fmtLoc(d.country, '', d.region, d.city),
       isp:      fmtISP(d.org || ''),
       asn:      fmtASN((d.org || '').match(/^AS\d+/i)?.[0]),
@@ -404,15 +471,19 @@
     const list = items.filter(Boolean);
     if (!list.length) return null;
     const pick = key => list.find(x => x?.[key])?.[key] || '';
+    const locationScore = loc => {
+      const s = String(loc || '');
+      if (!s) return 0;
+      const depth = s.split(/[ /·]+/).filter(Boolean).length;
+      return (hasCN(s) ? 100 : 0) + depth * 10 + Math.min([...s].length, 20);
+    };
     const bestLocation = () => {
       const locs = list.map(x => x?.location).filter(Boolean);
-      return locs.find(v => hasCN(v) && !/[A-Za-z]/.test(v))
-        || locs.find(v => hasCN(v))
-        || locs[0]
-        || '';
+      return locs.sort((a, b) => locationScore(b) - locationScore(a))[0] || '';
     };
     const ip = pick('ip');
-    const ms = Math.min(...list.map(x => x?.ms).filter(n => Number.isFinite(n) && n >= 0));
+    const times = list.map(x => x?.ms).filter(n => Number.isFinite(n) && n >= 0);
+    const ms = times.length ? Math.max(...times) : NaN;
     if (!ip) return null;
     return {
       ip,
@@ -435,25 +506,28 @@
   /**
    * 查询本地 IP（全部走直连，policy: 'DIRECT'）
    *
-   * 使用三个并发来源，解决原来两源同时失败导致本地信息缺失的问题：
+   * 使用多个并发来源，解决原来两源同时失败导致本地信息缺失的问题：
    *   源 A — myip.ipip.net  → 精确中文地名 + 中文运营商（无 ASN）
    *   源 B — ip-api.com     → ASN + 国际地名（免费版 HTTP，偶尔被劫持）
    *   源 C — ip.useragentinfo.com → 中文备用源，HTTPS，弥补 B 被劫持的情况（无 ASN）
+   *   源 D — ip.sb / ipwho.is → HTTPS 补 ASN、城市、运营商
    *
    * 字段级最优合并策略（不是整体二选一）：
    *   ip       → A > B > C（取第一个非空）
    *   location → A > C > B（中文源优先，精确度：A ≥ C > B）
    *   isp      → A > C > B（中文源优先，已是中文无需字典翻译）
-   *   asn      → B（唯一可靠提供 ASN 的源；若 B 被劫持则此项为空）
+   *   asn      → B / D 择优；HTTP 源被劫持时仍有 HTTPS 兜底
    *
-   * 容错：A B C 只要有 1 个成功，就能保证 ip + location + isp 三项可显示
-   *        只有三源全部失败才返回 null（概率极低）
+   * 容错：只要有 1 个来源成功，就能保证至少显示 IP；多个来源会字段级补全
+   *        只有所有来源全部失败才返回 null（概率极低）
    */
   async function queryLocal() {
     return smartFetch([
       ['https://myip.ipip.net/json', parseIPIP, { policy: 'DIRECT' }],
-      ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,as', parseIPAPI, { policy: 'DIRECT' }],
+      ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as', parseIPAPI, { policy: 'DIRECT' }],
       ['https://ip.useragentinfo.com/json', parseUAI, { policy: 'DIRECT' }],
+      ['https://api-ipv4.ip.sb/geoip', parseIPSB, { policy: 'DIRECT' }],
+      ['https://ipwho.is/', parseIPWHO, { policy: 'DIRECT' }],
     ], mergeInfo);
   }
 
@@ -464,8 +538,9 @@
    */
   async function queryLanding() {
     return smartFetch([
-      ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,as', parseIPAPI, {}, CFG.T_PROXY],
+      ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as', parseIPAPI, {}, CFG.T_PROXY],
       ['https://api-ipv4.ip.sb/geoip', parseIPSB, {}, CFG.T_PROXY],
+      ['https://ipwho.is/', parseIPWHO, {}, CFG.T_PROXY],
       ['https://ipinfo.io/json', parseIPInfo, {}, CFG.T_PROXY],
     ], mergeInfo);
   }
@@ -477,8 +552,9 @@
   async function queryEntranceInfo(ip) {
     const safeIP = encodeURIComponent(ip);
     return smartFetch([
-      [`http://ip-api.com/json/${safeIP}?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,as`, parseIPAPI, { policy: 'DIRECT' }],
+      [`http://ip-api.com/json/${safeIP}?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as`, parseIPAPI, { policy: 'DIRECT' }],
       [`https://api-ipv4.ip.sb/geoip/${safeIP}`, parseIPSB, { policy: 'DIRECT' }],
+      [`https://ipwho.is/${safeIP}`, parseIPWHO, { policy: 'DIRECT' }],
     ], mergeInfo);
   }
 
@@ -664,8 +740,14 @@
   // 保存当前入口 IP，供下次步骤 2 比对
   if (curEnt) $persistentStore.write(curEnt, KEY.ENT);
 
-  // 本地查询、落地查询、体感探测互相独立，并发执行缩短总时间
-  const [local, landing, probe] = await Promise.all([queryLocal(), queryLanding(), queryProbe()]);
+  // 本地查询、落地查询、入口预查询、体感探测互相独立，并发执行缩短总时间
+  const entranceGuess = curEnt ? queryEntranceInfo(curEnt) : Promise.resolve(null);
+  const [local, landing, probe, guessedEntrance] = await Promise.all([
+    queryLocal(),
+    queryLanding(),
+    queryProbe(),
+    entranceGuess,
+  ]);
 
   // ── 步骤 5：落地查询完成后重读记录，提取入口 IP ────────────────
   // queryLanding 向 ip.sb 发了一条代理请求，此时再读记录可以找到该请求的 remoteAddress
@@ -673,7 +755,9 @@
   const reqs2    = await getSurgeReqs();
   const entIP    = findProxyIP(reqs2, { limit: 100, urlRE: /ip\.sb|ipinfo\.io/, excludeIP: landing?.ip || '' });
   const entranceIP = entIP || curEnt || '';
-  const entrance = entranceIP ? await queryEntranceInfo(entranceIP) : null;
+  const entrance = entranceIP
+    ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP))
+    : null;
 
   const old = cache.data || {};
   const sameEntrance = !!(entranceIP && old.entranceIP === entranceIP);
