@@ -531,6 +531,14 @@
 
   const compact = parts => parts.map(v => String(v || '').trim()).filter(Boolean);
   const stateOf = section => section?.cached ? '缓存' : (section?.info ? '实时' : '缺失');
+  const clip = (value, max = 30) => {
+    const chars = [...String(value || '').trim()];
+    return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : chars.join('');
+  };
+  const compactIP = ip => {
+    const s = String(ip || '-').trim();
+    return s.includes(':') ? clip(s, 20) : s;
+  };
   const regionCityOf = info => {
     const region = info?.region || '';
     const city = info?.city || '';
@@ -541,36 +549,28 @@
     }
     return city || region;
   };
-  const placeOf = info => compact([
-    info?.country ? `${flagOf(info.countryCode)} ${info.country}` : flagOf(info?.countryCode),
-    regionCityOf(info),
-  ]).join(' · ');
+  const briefPlaceOf = info => info?.location || compact([info?.country, regionCityOf(info)]).join(' ');
   const routeNode = (label, section, fallbackIP = '') => {
     const info = section?.info || {};
-    const ip = info.ip || fallbackIP || '-';
-    return `${flagOf(info.countryCode)} ${label}${ip !== '-' ? ` ${ip}` : ''}`;
+    const flag = flagOf(info.countryCode);
+    return `${flag}${label}`;
   };
 
   /**
-   * 两行一组的紧凑面板：
+   * 两行一组的小面板：
    *   本地 🇨🇳  1.2.3.4
    *        广东 深圳 · 中国电信 · AS4134
-   *        🇨🇳 中国 · 广东/深圳 · 实时
    */
   function block(label, section, fallbackIP = '') {
     const info = section?.info || null;
-    const ip = info?.ip || fallbackIP || '-';
-    const primary = compact([
-      info?.location,
-      info?.isp,
+    const ip = compactIP(info?.ip || fallbackIP || '-');
+    const detail = compact([
+      clip(briefPlaceOf(info), 14),
+      clip(info?.isp, 11),
       info?.asn,
     ]).join(' · ');
-    const secondary = compact([
-      placeOf(info),
-      stateOf(section),
-    ]).join(' · ');
 
-    return `${label} ${flagOf(info?.countryCode)}  ${ip}\n      ${primary || '暂无详情'}\n      ${secondary || stateOf(section)}`;
+    return `${label} ${flagOf(info?.countryCode)}  ${ip} · ${stateOf(section)}\n      ${detail || '暂无详情'}`;
   }
 
   const render = (data, now = new Date(), elapsed = 0) => {
