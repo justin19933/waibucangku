@@ -180,6 +180,10 @@
     if (/香港|hong\s*kong|\bhk\b/.test(s)) return 'HK';
     if (/台湾|taiwan|\btw\b/.test(s)) return 'TW';
     if (/澳门|macau|macao|\bmo\b/.test(s)) return 'MO';
+    if (/日本|japan|\bjp\b/.test(s)) return 'JP';
+    if (/新加坡|singapore|\bsg\b/.test(s)) return 'SG';
+    if (/美国|united\s*states|usa|\bus\b/.test(s)) return 'US';
+    if (/韩国|south\s*korea|korea|\bkr\b/.test(s)) return 'KR';
     if (/^[A-Z]{2}$/.test(cc)) return cc;
     if (/^(中国|中国大陆|china|mainland china|cn)$/.test(s)) return 'CN';
     return '';
@@ -196,6 +200,8 @@
     shanghai: '上海',
     pudong: '浦东',
     hangzhou: '杭州',
+    shenzhen: '深圳',
+    guangzhou: '广州',
     beijing: '北京',
     guangdong: '广东',
     sichuan: '四川',
@@ -204,14 +210,33 @@
     'mian yang': '绵阳',
     'mian yang shi': '绵阳',
     tokyo: '东京',
+    yokohama: '横滨',
+    kanagawa: '神奈川',
     minamishinagawa: '南品川',
     osaka: '大阪',
+    seoul: '首尔',
+    incheon: '仁川',
     singapore: '新加坡',
     hongkong: '香港',
     'hong kong': '香港',
     macau: '澳门',
     macao: '澳门',
     taiwan: '台湾',
+    taipei: '台北',
+    'los angeles': '洛杉矶',
+    'san jose': '圣何塞',
+    fremont: '弗里蒙特',
+    seattle: '西雅图',
+    chicago: '芝加哥',
+    dallas: '达拉斯',
+    london: '伦敦',
+    frankfurt: '法兰克福',
+    amsterdam: '阿姆斯特丹',
+    paris: '巴黎',
+    sydney: '悉尼',
+    melbourne: '墨尔本',
+    toronto: '多伦多',
+    vancouver: '温哥华',
   };
 
   const geoName = value => {
@@ -244,10 +269,13 @@
     const code = countryCodeOf(cc, country).toLowerCase();
     const tR = geoName(region); // 省/州
     const tC = geoName(city);   // 城市
+    const knownCountryCode = countryCodeOf('', country).toLowerCase();
+    const countryLabel = hasCN(country) && (!knownCountryCode || knownCountryCode === code)
+      ? country
+      : countryName(code) || country || cc;
     const parts = code === 'cn'
       ? [tR, tC]
-      : [hasCN(country) ? country : countryName(code) || country || cc,
-         tC || tR];
+      : [countryLabel, tC || tR];
     return cleanParts(parts.filter(Boolean)).join(' ');
   };
 
@@ -259,14 +287,54 @@
     [/china\s+unicom|unicom/i, '中国联通'],
     [/china\s+mobile|cmcc|cmi/i, '中国移动'],
     [/aliyun|alibaba|ali\s*cloud/i, '阿里云'],
+    [/tencent|qcloud/i, '腾讯云'],
+    [/huawei|huaweicloud/i, '华为云'],
+    [/baidu/i, '百度云'],
+    [/ucloud/i, 'UCloud'],
+    [/volcengine|bytedance/i, '火山引擎'],
     [/oriental\s+cable|shanghai\s+oriental/i, '东方有线'],
     [/dmit/i, 'DMIT'],
+    [/bandwagon|it7/i, '搬瓦工'],
+    [/xtom/i, 'xTom'],
+    [/zenlayer/i, 'Zenlayer'],
+    [/softbank/i, 'SoftBank'],
+    [/kddi/i, 'KDDI'],
+    [/ntt/i, 'NTT'],
+    [/pccw/i, 'PCCW'],
+    [/hgc/i, 'HGC'],
+    [/hetzner/i, 'Hetzner'],
+    [/ovh/i, 'OVH'],
+    [/leaseweb/i, 'Leaseweb'],
+    [/digitalocean/i, 'DigitalOcean'],
+    [/vultr/i, 'Vultr'],
+    [/linode/i, 'Linode'],
+    [/m247/i, 'M247'],
+    [/cogent/i, 'Cogent'],
     [/cloudflare/i, 'Cloudflare'],
     [/akamai/i, 'Akamai'],
     [/amazon|aws/i, 'AWS'],
     [/google/i, 'Google'],
     [/microsoft|azure/i, 'Microsoft'],
     [/oracle/i, 'Oracle'],
+  ];
+  const ASN_ALIAS = [
+    [/AS4134\b/i, '中国电信'],
+    [/AS4809\b/i, '中国电信 CN2'],
+    [/AS4837\b/i, '中国联通'],
+    [/AS9808\b/i, '中国移动'],
+    [/AS58453\b/i, '中国移动 CMI'],
+    [/AS37963\b|AS45102\b/i, '阿里云'],
+    [/AS45090\b|AS132203\b/i, '腾讯云'],
+    [/AS55990\b|AS136907\b/i, '华为云'],
+    [/AS132110\b/i, 'DMIT'],
+    [/AS17676\b/i, 'SoftBank'],
+    [/AS13335\b/i, 'Cloudflare'],
+    [/AS8075\b/i, 'Microsoft'],
+    [/AS15169\b/i, 'Google'],
+    [/AS16509\b|AS14618\b/i, 'AWS'],
+    [/AS14061\b/i, 'DigitalOcean'],
+    [/AS20473\b/i, 'Vultr'],
+    [/AS63949\b/i, 'Linode'],
   ];
 
   /**
@@ -282,6 +350,8 @@
     // 去括号 / 逗号 / 多余空格
     const cl  = s.replace(/\s*[\(\（][^\)\）]{0,30}[\)\）]\s*/g, ' ')
                   .replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+    const asnHit = ASN_ALIAS.find(([re]) => re.test(cl) || re.test(s));
+    if (asnHit) return asnHit[1];
     const hit = ISP_ALIAS.find(([re]) => re.test(cl) || re.test(s));
     if (hit) return hit[1];
     // 未命中：兜底清洗逻辑
@@ -345,7 +415,7 @@
    */
   const parseIPAPI = d => {
     if (d?.status !== 'success') return null;
-    const countryCode = countryCodeOf(d.countryCode, d.country);
+    const countryCode = countryCodeOf(d.countryCode, `${d.country || ''} ${d.regionName || ''} ${d.city || ''}`);
     const rawISP = `${d.isp || ''} ${d.org || ''} ${d.asname || ''} ${d.as || ''}`;
     const isp = fmtISP(rawISP);
     const inferred = inferGeoFromISP(rawISP);
@@ -358,7 +428,7 @@
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
       region,
       city,
-      location: fmtLoc(d.countryCode, d.country, region, city),
+      location: fmtLoc(countryCode, d.country, region, city),
       isp,
       asn:      fmtASN((d.as || '').match(/\b(AS\d+)\b/i)?.[1]),
     };
@@ -395,7 +465,7 @@
    */
   const parseIPSB = d => {
     if (!d?.ip) return null;
-    const countryCode = countryCodeOf(d.country_code, d.country);
+    const countryCode = countryCodeOf(d.country_code, `${d.country || ''} ${d.region || ''} ${d.city || ''}`);
     const rawISP = `${d.isp || ''} ${d.organization || ''} ${d.asn_organization || ''}`;
     const inferred = inferGeoFromISP(rawISP);
     const region = geoName(d.region || inferred.region || '');
@@ -407,7 +477,7 @@
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
       region,
       city,
-      location: fmtLoc(d.country_code, d.country, region, city),
+      location: fmtLoc(countryCode, d.country, region, city),
       isp:      fmtISP(rawISP),
       asn:      fmtASN(d.asn),
     };
@@ -420,7 +490,7 @@
    */
   const parseIPWHO = d => {
     if (!d?.success || !d.ip) return null;
-    const countryCode = countryCodeOf(d.country_code, d.country);
+    const countryCode = countryCodeOf(d.country_code, `${d.country || ''} ${d.region || ''} ${d.city || ''}`);
     const conn = d.connection || {};
     const rawISP = `${conn.org || ''} ${conn.isp || ''}`;
     const inferred = inferGeoFromISP(rawISP);
@@ -433,7 +503,7 @@
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
       region,
       city,
-      location: fmtLoc(d.country_code, d.country, region, city),
+      location: fmtLoc(countryCode, d.country, region, city),
       isp:      fmtISP(rawISP),
       asn:      fmtASN(conn.asn),
     };
@@ -446,7 +516,7 @@
    */
   const parseIPInfo = d => {
     if (!d?.ip) return null;
-    const countryCode = countryCodeOf(d.country, '');
+    const countryCode = countryCodeOf(d.country, `${d.region || ''} ${d.city || ''}`);
     return {
       source:   'ipinfo',
       ip:       d.ip,
@@ -454,9 +524,30 @@
       country:  countryName(countryCode),
       region:   geoName(d.region || ''),
       city:     geoName(d.city || ''),
-      location: fmtLoc(d.country, '', d.region, d.city),
+      location: fmtLoc(countryCode, '', d.region, d.city),
       isp:      fmtISP(d.org || ''),
       asn:      fmtASN((d.org || '').match(/^AS\d+/i)?.[0]),
+    };
+  };
+
+  /**
+   * 解析 api.iplocation.net/?ip=<ip>
+   * 用途：入口固定 IP 的国家/运营商兜底，尤其辅助判断香港/台湾/澳门等地区
+   */
+  const parseIPLocation = d => {
+    if (String(d?.response_code || '') !== '200' || !d.ip) return null;
+    const countryCode = countryCodeOf(d.country_code2, d.country_name);
+    const country = hasCN(d.country_name) ? d.country_name : countryName(countryCode) || d.country_name || '';
+    return {
+      source:   'iplocation',
+      ip:       d.ip,
+      countryCode,
+      country,
+      region:   '',
+      city:     '',
+      location: fmtLoc(countryCode, country, '', ''),
+      isp:      fmtISP(d.isp || ''),
+      asn:      '',
     };
   };
 
@@ -465,10 +556,10 @@
     if (!list.length) return null;
     const pick = key => list.find(x => x?.[key])?.[key] || '';
     const SRC = {
-      country: { ipwho: 100, ipinfo: 86, ipapi: 80, ipip: 78, uai: 78, ipsb: 55 },
-      geo:     { ipwho: 100, ipip: 94, uai: 90, ipapi: 82, ipinfo: 80, ipsb: 58 },
-      isp:     { ipwho: 96,  ipip: 92, uai: 88, ipsb: 84, ipapi: 80, ipinfo: 70 },
-      asn:     { ipwho: 96,  ipsb: 92, ipapi: 86, ipinfo: 82, ipip: 0,  uai: 0 },
+      country: { ipwho: 100, iplocation: 90, ipinfo: 88, ipapi: 80, ipip: 78, uai: 78, ipsb: 55 },
+      geo:     { ipwho: 100, ipip: 94, uai: 90, ipinfo: 86, ipapi: 82, ipsb: 58, iplocation: 42 },
+      isp:     { ipwho: 96,  ipip: 92, uai: 88, ipsb: 84, ipapi: 80, iplocation: 78, ipinfo: 76 },
+      asn:     { ipwho: 96,  ipsb: 92, ipapi: 86, ipinfo: 82, ipip: 0,  uai: 0, iplocation: 0 },
     };
     const srcScore = (item, type) => SRC[type]?.[item?.source] ?? 40;
     const joined = item => compact([item?.country, item?.region, item?.city, item?.location]).join(' ');
@@ -548,6 +639,7 @@
       ['https://ip.useragentinfo.com/json', parseUAI, { policy: 'DIRECT' }],
       ['https://api-ipv4.ip.sb/geoip', parseIPSB, { policy: 'DIRECT' }],
       ['https://ipwho.is/', parseIPWHO, { policy: 'DIRECT' }],
+      ['https://ipinfo.io/json', parseIPInfo, { policy: 'DIRECT' }],
     ], mergeInfo);
   }
 
@@ -575,6 +667,8 @@
       [`http://ip-api.com/json/${safeIP}?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as`, parseIPAPI, { policy: 'DIRECT' }],
       [`https://api-ipv4.ip.sb/geoip/${safeIP}`, parseIPSB, { policy: 'DIRECT' }],
       [`https://ipwho.is/${safeIP}`, parseIPWHO, { policy: 'DIRECT' }],
+      [`https://ipinfo.io/${safeIP}/json`, parseIPInfo, { policy: 'DIRECT' }],
+      [`https://api.iplocation.net/?ip=${safeIP}`, parseIPLocation, { policy: 'DIRECT' }],
     ], mergeInfo);
   }
 
@@ -607,6 +701,12 @@
       if (ip && ip !== excludeIP) return ip;
     }
     return '';
+  };
+
+  const sameIP = (a, b) => {
+    const norm = v => String(v || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    const x = norm(a), y = norm(b);
+    return !!(x && y && x === y);
   };
 
   // ══════════════════════════════════════════════════════
@@ -708,10 +808,16 @@
   const render = (data, now = new Date()) => {
     const pad = n => String(n).padStart(2, '0');
     const spin = ['◐', '◓', '◑', '◒'][Math.floor(now.getTime() / 1000) % 4];
+    const showEntrance = !data.directRoute && !!(data.entrance?.info || data.entranceIP);
+    const route = [
+      routeNode('本地', data.local),
+      showEntrance ? routeNode('入口', data.entrance, data.entranceIP) : '',
+      routeNode('落地', data.landing),
+    ].filter(Boolean).join(' → ');
     const sections = [
-      `${spin} 路线  ${routeNode('本地', data.local)} → ${routeNode('入口', data.entrance, data.entranceIP)} → ${routeNode('落地', data.landing)}`,
+      `${spin} 路线  ${route}`,
       block('本地', data.local),
-      block('入口', data.entrance, data.entranceIP),
+      showEntrance ? block('入口', data.entrance, data.entranceIP) : '',
       block('落地', data.landing),
       `更新  ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
     ];
@@ -763,14 +869,17 @@
   const entrance = entranceIP
     ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP))
     : null;
+  const directRoute = sameIP(entranceIP, landing?.ip);
+  const landingFinal = directRoute ? mergeInfo(landing, entrance) : landing;
 
   const old = cache.data || {};
-  const sameEntrance = !!(entranceIP && old.entranceIP === entranceIP);
+  const sameEntrance = !directRoute && !!(entranceIP && old.entranceIP === entranceIP);
   const data = {
     local:     pickInfo(local, old.local, cacheStale),
-    landing:   pickInfo(landing, old.landing, !nodeChanged && cacheStale),
-    entrance:  pickInfo(entrance, old.entrance, sameEntrance && cacheStale),
-    entranceIP: entranceIP || old.entranceIP || '',
+    landing:   pickInfo(landingFinal, old.landing, !nodeChanged && cacheStale),
+    entrance:  directRoute ? { info: null, cached: false } : pickInfo(entrance, old.entrance, sameEntrance && cacheStale),
+    entranceIP: directRoute ? '' : (entranceIP || old.entranceIP || ''),
+    directRoute,
   };
 
   // 兼容旧版只有 content、没有 data 的缓存
