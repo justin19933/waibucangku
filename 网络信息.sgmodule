@@ -4,4 +4,4 @@
 网络信息 = type=generic,timeout=20,script-path=https://raw.githubusercontent.com/justin19933/waibucangku/main/%E7%BD%91%E7%BB%9C%E4%BF%A1%E6%81%AF.js
 
 [Panel]
-网络信息面板 = script-name=网络信息, update-interval=5
+网络信息面板 = script-name=网络信息, update-interval=3

@@ -17,8 +17,8 @@
     RETRIES:   1,
     // 首个数据源成功后，额外等待更优字段的时间（毫秒）
     SMART_GRACE: 450,
-    // 查询结果缓存有效期：30 秒；节点变化时仍会立即刷新
-    CACHE_TTL: 30000,
+    // 查询结果缓存有效期：2.5 秒；配合面板刷新显示近实时延迟
+    CACHE_TTL: 2500,
     // 刷新失败时最多沿用 1 小时内的旧结果，避免好面板被空结果覆盖
     STALE_TTL: 3600000,
   };
@@ -55,7 +55,9 @@
    */
   const fetchJSON = async (url, opt = {}, timeout = CFG.T_DIRECT) => {
     try {
-      return JSON.parse(await httpGet({ url, timeout, ...opt }));
+      const started = Date.now();
+      const body = await httpGet({ url, timeout, ...opt });
+      return { data: JSON.parse(body), ms: Date.now() - started };
     } catch {
       return null; // 网络错误 / 解析错误 / 内容异常，统一返回 null
     }
@@ -110,8 +112,9 @@
     sources.forEach(([url, parser, opt = {}, timeout = CFG.T_DIRECT]) => {
       fetchWithRetry(url, opt, timeout)
         .then(d => {
-          const parsed = parser(d);
+          const parsed = d ? parser(d.data) : null;
           if (parsed) {
+            parsed.ms = d.ms;
             results.push(parsed);
             if (!timer) timer = setTimeout(() => finish(true), grace);
             finish(false);
@@ -387,6 +390,7 @@
         || '';
     };
     const ip = pick('ip');
+    const ms = Math.min(...list.map(x => x?.ms).filter(n => Number.isFinite(n) && n >= 0));
     if (!ip) return null;
     return {
       ip,
@@ -397,6 +401,7 @@
       location: bestLocation(),
       isp:      pick('isp'),
       asn:      pick('asn'),
+      ms:       Number.isFinite(ms) ? ms : '',
     };
   };
 
@@ -514,6 +519,7 @@
       location: String(v.location || '').trim(),
       isp:      String(v.isp || '').trim(),
       asn:      String(v.asn || '').trim(),
+      ms:       Number.isFinite(v.ms) ? v.ms : '',
     };
   };
 
@@ -539,6 +545,7 @@
     const s = String(ip || '-').trim();
     return s.includes(':') ? clip(s, 20) : s;
   };
+  const latencyOf = info => Number.isFinite(info?.ms) ? `${info.ms}ms` : '';
   const regionCityOf = info => {
     const region = info?.region || '';
     const city = info?.city || '';
@@ -564,18 +571,20 @@
   function block(label, section, fallbackIP = '') {
     const info = section?.info || null;
     const ip = compactIP(info?.ip || fallbackIP || '-');
+    const badge = compact([section?.cached ? '缓存' : '', latencyOf(info)]).join(' ') || stateOf(section);
     const detail = compact([
       clip(briefPlaceOf(info), 14),
       clip(info?.isp, 11),
       info?.asn,
     ]).join(' · ');
 
-    return `${label} ${flagOf(info?.countryCode)}  ${ip} · ${stateOf(section)}\n      ${detail || '暂无详情'}`;
+    return `${label} ${flagOf(info?.countryCode)}  ${ip} · ${badge}\n      ${detail || '暂无详情'}`;
   }
 
   const render = (data, now = new Date(), elapsed = 0) => {
     const pad = n => String(n).padStart(2, '0');
     const cost = elapsed >= 1000 ? `${(elapsed / 1000).toFixed(1)}s` : `${elapsed}ms`;
+    const spin = ['◐', '◓', '◑', '◒'][Math.floor(now.getTime() / 1000) % 4];
     const local = data.local?.info || {};
     const entrance = data.entrance?.info || {};
     const landing = data.landing?.info || {};
@@ -587,7 +596,7 @@
       : '';
     const status = compact([countryMode, hopMode, cost]).join(' · ');
     const sections = [
-      `路线  ${routeNode('本地', data.local)} → ${routeNode('入口', data.entrance, data.entranceIP)} → ${routeNode('落地', data.landing)}`,
+      `${spin} 路线  ${routeNode('本地', data.local)} → ${routeNode('入口', data.entrance, data.entranceIP)} → ${routeNode('落地', data.landing)}`,
       `状态  ${status || cost}`,
       block('本地', data.local),
       block('入口', data.entrance, data.entranceIP),
