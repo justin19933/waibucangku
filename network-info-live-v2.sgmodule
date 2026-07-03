@@ -1,7 +1,7 @@
 #!name=网络信息 Live
-#!desc=本地 / 入口 / 落地 IP 信息面板，直连机折叠入口 + 城市/运营商增强 v20260704-7
+#!desc=本地 / 入口 / 落地 IP 信息面板，直连机折叠入口 + 运营商语料增强 v20260704-8
 [Script]
-网络信息 Live = type=generic,timeout=20,script-path=https://cdn.jsdelivr.net/gh/justin19933/waibucangku/network-info-live-v2.js?v=20260704-7
+网络信息 Live = type=generic,timeout=20,script-path=https://cdn.jsdelivr.net/gh/justin19933/waibucangku/network-info-live-v2.js?v=20260704-8
 
 [Panel]
 网络信息 Live 面板 = script-name=网络信息 Live, update-interval=3
