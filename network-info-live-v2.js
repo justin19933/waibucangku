@@ -13,15 +13,11 @@
     T_DIRECT:  5,
     // 代理请求超时（秒）。落地查询走代理，适当给长些
     T_PROXY:   5,
-    // 探测请求超时（秒），用于显示直连 / 代理体感耗时
-    T_PROBE:   3,
-    // 轻量探测地址：只用来估算 HTTP 访问耗时，不参与 IP 信息判断
-    PROBE_URL: 'https://www.apple.com/library/test/success.html',
     // 每个数据源的最大重试次数（正式请求 + RETRIES 次重试）
     RETRIES:   1,
     // 首个数据源成功后，额外等待更优字段的时间（毫秒）
     SMART_GRACE: 900,
-    // 查询结果缓存有效期：2.5 秒；配合面板刷新显示近实时延迟
+    // 查询结果缓存有效期：2.5 秒；节点切换时会尽快刷新
     CACHE_TTL: 2500,
     // 刷新失败时最多沿用 1 小时内的旧结果，避免好面板被空结果覆盖
     STALE_TTL: 3600000,
@@ -31,8 +27,8 @@
   //  KEYS  持久化存储键名
   // ══════════════════════════════════════════════════════
   const KEY = {
-    CACHE:   'NI_CACHE_V3',    // 面板查询结果缓存
-    ENT:     'NI_ENT_V3',      // 上次检测到的入口 IP（用于判断节点是否切换）
+    CACHE:   'NI_CACHE_V4',    // 面板查询结果缓存
+    ENT:     'NI_ENT_V4',      // 上次检测到的入口 IP（用于判断节点是否切换）
   };
 
   // ══════════════════════════════════════════════════════
@@ -143,24 +139,6 @@
     } catch { return []; }
   };
 
-  const probeLatency = async (label, opt = {}) => {
-    const started = Date.now();
-    try {
-      await httpGet({ url: CFG.PROBE_URL, timeout: CFG.T_PROBE, ...opt });
-      return { label, ms: Date.now() - started };
-    } catch {
-      return { label, ms: '' };
-    }
-  };
-
-  const queryProbe = async () => {
-    const [direct, proxy] = await Promise.all([
-      probeLatency('direct', { policy: 'DIRECT' }),
-      probeLatency('proxy', {}),
-    ]);
-    return { direct: direct.ms, proxy: proxy.ms };
-  };
-
   // ══════════════════════════════════════════════════════
   //  FORMATTER  格式化层
   //  不再依赖映射库：优先使用数据源中文字段 + Intl 国家名 + 规则化清洗
@@ -187,6 +165,8 @@
   const countryName = code => {
     const cc = String(code || '').trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(cc)) return '';
+    const alias = { CN: '中国', HK: '香港', MO: '澳门', TW: '台湾', JP: '日本', SG: '新加坡', US: '美国' };
+    if (alias[cc]) return alias[cc];
     try {
       return new Intl.DisplayNames(['zh-Hans-CN', 'zh-CN'], { type: 'region' }).of(cc) || cc;
     } catch {
@@ -196,12 +176,12 @@
 
   const countryCodeOf = (code, country = '') => {
     const cc = String(code || '').trim().toUpperCase();
-    if (/^[A-Z]{2}$/.test(cc)) return cc;
     const s = String(country || '').trim().toLowerCase();
-    if (/^(中国|china|cn)$/.test(s)) return 'CN';
-    if (/^(香港|hong kong|hk)$/.test(s)) return 'HK';
-    if (/^(台湾|taiwan|tw)$/.test(s)) return 'TW';
-    if (/^(澳门|macau|macao|mo)$/.test(s)) return 'MO';
+    if (/香港|hong\s*kong|\bhk\b/.test(s)) return 'HK';
+    if (/台湾|taiwan|\btw\b/.test(s)) return 'TW';
+    if (/澳门|macau|macao|\bmo\b/.test(s)) return 'MO';
+    if (/^[A-Z]{2}$/.test(cc)) return cc;
+    if (/^(中国|中国大陆|china|mainland china|cn)$/.test(s)) return 'CN';
     return '';
   };
 
@@ -212,8 +192,10 @@
   };
 
   const GEO_ALIAS = {
+    china: '中国',
     shanghai: '上海',
     pudong: '浦东',
+    hangzhou: '杭州',
     beijing: '北京',
     guangdong: '广东',
     sichuan: '四川',
@@ -227,6 +209,9 @@
     singapore: '新加坡',
     hongkong: '香港',
     'hong kong': '香港',
+    macau: '澳门',
+    macao: '澳门',
+    taiwan: '台湾',
   };
 
   const geoName = value => {
@@ -273,7 +258,9 @@
     [/china\s+telecom|chinanet|ct\s*net/i, '中国电信'],
     [/china\s+unicom|unicom/i, '中国联通'],
     [/china\s+mobile|cmcc|cmi/i, '中国移动'],
+    [/aliyun|alibaba|ali\s*cloud/i, '阿里云'],
     [/oriental\s+cable|shanghai\s+oriental/i, '东方有线'],
+    [/dmit/i, 'DMIT'],
     [/cloudflare/i, 'Cloudflare'],
     [/akamai/i, 'Akamai'],
     [/amazon|aws/i, 'AWS'],
@@ -339,6 +326,7 @@
     const city = geoName(L[2] || '');
     // L[0]=国家, L[1]=省, L[2]=市, L[3]=运营商, L[4]=邮编, L[5]=时区 ...
     return {
+      source:   'ipip',
       ip:       d.data.ip,
       countryCode: countryCodeOf('', country),
       country:  hasCN(country) ? country : countryName(countryCodeOf('', country)) || country,
@@ -364,6 +352,7 @@
     const region = geoName(d.regionName || inferred.region || '');
     const city = geoName(d.city || inferred.city || '');
     return {
+      source:   'ipapi',
       ip:       d.query || '',
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
@@ -387,6 +376,7 @@
     const city     = d.city     ? geoName(d.city)     : '';
     const countryCode = countryCodeOf('', d.country || '中国');
     return {
+      source:   'uai',
       ip:       d.ip,
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode),
@@ -411,6 +401,7 @@
     const region = geoName(d.region || inferred.region || '');
     const city = geoName(d.city || inferred.city || '');
     return {
+      source:   'ipsb',
       ip:       d.ip,
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
@@ -436,6 +427,7 @@
     const region = geoName(d.region || inferred.region || '');
     const city = geoName(d.city || inferred.city || '');
     return {
+      source:   'ipwho',
       ip:       d.ip,
       countryCode,
       country:  hasCN(d.country) ? d.country : countryName(countryCode) || d.country || '',
@@ -456,6 +448,7 @@
     if (!d?.ip) return null;
     const countryCode = countryCodeOf(d.country, '');
     return {
+      source:   'ipinfo',
       ip:       d.ip,
       countryCode,
       country:  countryName(countryCode),
@@ -471,29 +464,56 @@
     const list = items.filter(Boolean);
     if (!list.length) return null;
     const pick = key => list.find(x => x?.[key])?.[key] || '';
+    const SRC = {
+      country: { ipwho: 100, ipinfo: 86, ipapi: 80, ipip: 78, uai: 78, ipsb: 55 },
+      geo:     { ipwho: 100, ipip: 94, uai: 90, ipapi: 82, ipinfo: 80, ipsb: 58 },
+      isp:     { ipwho: 96,  ipip: 92, uai: 88, ipsb: 84, ipapi: 80, ipinfo: 70 },
+      asn:     { ipwho: 96,  ipsb: 92, ipapi: 86, ipinfo: 82, ipip: 0,  uai: 0 },
+    };
+    const srcScore = (item, type) => SRC[type]?.[item?.source] ?? 40;
+    const joined = item => compact([item?.country, item?.region, item?.city, item?.location]).join(' ');
+    const hkHint = item => item?.countryCode === 'HK' || /香港|hong\s*kong/i.test(joined(item));
     const locationScore = loc => {
       const s = String(loc || '');
       if (!s) return 0;
       const depth = s.split(/[ /·]+/).filter(Boolean).length;
       return (hasCN(s) ? 100 : 0) + depth * 10 + Math.min([...s].length, 20);
     };
-    const bestLocation = () => {
-      const locs = list.map(x => x?.location).filter(Boolean);
-      return locs.sort((a, b) => locationScore(b) - locationScore(a))[0] || '';
-    };
+    const bestBy = (filter, score) =>
+      list.filter(filter).sort((a, b) => score(b) - score(a))[0] || {};
+    const countryScore = item =>
+      srcScore(item, 'country')
+      + (hkHint(item) && item.countryCode === 'HK' ? 35 : 0)
+      - (hkHint(item) && item.countryCode === 'CN' ? 45 : 0);
+    const geoScore = item =>
+      srcScore(item, 'geo')
+      + locationScore(item.location)
+      + (item.city ? 8 : 0)
+      + (item.region ? 4 : 0);
+    const ispScore = item => srcScore(item, 'isp') + (hasCN(item.isp) ? 8 : 0) + Math.min([...String(item.isp || '')].length, 16);
+    const asnScore = item => srcScore(item, 'asn') + (/^AS\d+$/i.test(item.asn || '') ? 20 : 0);
     const ip = pick('ip');
     const times = list.map(x => x?.ms).filter(n => Number.isFinite(n) && n >= 0);
     const ms = times.length ? Math.max(...times) : NaN;
     if (!ip) return null;
+    const countryItem = bestBy(x => x.countryCode || x.country, countryScore);
+    const geoItem = bestBy(x => x.location || x.region || x.city, geoScore);
+    const ispItem = bestBy(x => x.isp, ispScore);
+    const asnItem = bestBy(x => x.asn, asnScore);
+    const countryCode = countryItem.countryCode || geoItem.countryCode || pick('countryCode');
+    const country = countryItem.country || countryName(countryCode) || geoItem.country || pick('country');
+    const region = geoItem.region || pick('region');
+    const city = geoItem.city || pick('city');
+    const location = geoItem.location || fmtLoc(countryCode, country, region, city);
     return {
       ip,
-      countryCode: pick('countryCode'),
-      country:  pick('country'),
-      region:   pick('region'),
-      city:     pick('city'),
-      location: bestLocation(),
-      isp:      pick('isp'),
-      asn:      pick('asn'),
+      countryCode,
+      country,
+      region,
+      city,
+      location,
+      isp:      ispItem.isp || pick('isp'),
+      asn:      asnItem.asn || pick('asn'),
       ms:       Number.isFinite(ms) ? ms : '',
     };
   };
@@ -634,7 +654,6 @@
   // ══════════════════════════════════════════════════════
 
   const compact = parts => parts.map(v => String(v || '').trim()).filter(Boolean);
-  const stateOf = section => section?.cached ? '缓存' : (section?.info ? '实时' : '缺失');
   const clip = (value, max = 30) => {
     const chars = [...String(value || '').trim()];
     return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : chars.join('');
@@ -643,8 +662,6 @@
     const s = String(ip || '-').trim();
     return s.includes(':') ? clip(s, 20) : s;
   };
-  const fmtMS = value => Number.isFinite(value) ? `${value}ms` : '';
-  const queryMSOf = info => Number.isFinite(info?.ms) ? `查${info.ms}ms` : '';
   const regionCityOf = info => {
     const region = info?.region || '';
     const city = info?.city || '';
@@ -670,39 +687,29 @@
   function block(label, section, fallbackIP = '') {
     const info = section?.info || null;
     const ip = compactIP(info?.ip || fallbackIP || '-');
-    const badge = compact([section?.cached ? '缓存' : '', queryMSOf(info)]).join(' ') || stateOf(section);
-    const detail = compact([
-      clip(briefPlaceOf(info), 14),
-      clip(info?.isp, 11),
-      info?.asn,
-    ]).join(' · ');
+    const flag = flagOf(info?.countryCode);
+    const place = clip(briefPlaceOf(info), 18);
+    const isp = clip(info?.isp, 24);
+    const asn = info?.asn || '';
+    const detail = compact([place, isp, asn]).join(' · ');
+    const lines = [`${label} ${flag}  ${ip}`];
 
-    return `${label} ${flagOf(info?.countryCode)}  ${ip} · ${badge}\n      ${detail || '暂无详情'}`;
+    if (!detail) {
+      lines.push('      暂无详情');
+    } else if ([...detail].length <= 30) {
+      lines.push(`      ${detail}`);
+    } else {
+      if (place) lines.push(`      ${place}`);
+      lines.push(`      ${compact([isp, asn]).join(' · ') || '暂无运营商'}`);
+    }
+    return lines.join('\n');
   }
 
-  const render = (data, now = new Date(), elapsed = 0) => {
+  const render = (data, now = new Date()) => {
     const pad = n => String(n).padStart(2, '0');
-    const cost = elapsed >= 1000 ? `${(elapsed / 1000).toFixed(1)}s` : `${elapsed}ms`;
     const spin = ['◐', '◓', '◑', '◒'][Math.floor(now.getTime() / 1000) % 4];
-    const local = data.local?.info || {};
-    const entrance = data.entrance?.info || {};
-    const landing = data.landing?.info || {};
-    const countryMode = local.countryCode && landing.countryCode
-      ? (local.countryCode === landing.countryCode ? '同国' : '跨境')
-      : '';
-    const hopMode = data.entranceIP && landing.ip
-      ? (data.entranceIP === landing.ip ? '直落' : '中转')
-      : '';
-    const probe = data.probe || {};
-    const status = compact([countryMode, hopMode, `总${cost}`]).join(' · ');
-    const probeLine = compact([
-      fmtMS(probe.direct) ? `直连${fmtMS(probe.direct)}` : '',
-      fmtMS(probe.proxy) ? `代理${fmtMS(probe.proxy)}` : '',
-    ]).join(' · ');
     const sections = [
       `${spin} 路线  ${routeNode('本地', data.local)} → ${routeNode('入口', data.entrance, data.entranceIP)} → ${routeNode('落地', data.landing)}`,
-      `状态  ${status || cost}`,
-      probeLine ? `探测  ${probeLine}` : '',
       block('本地', data.local),
       block('入口', data.entrance, data.entranceIP),
       block('落地', data.landing),
@@ -715,7 +722,6 @@
   //  MAIN  主流程
   //  6 个步骤：读缓存 → 检测变化 → 命中返回 / 全量刷新 → 渲染输出
   // ══════════════════════════════════════════════════════
-  const startedAt = Date.now();
 
   // ── 步骤 1：读取缓存状态 ─────────────────────────────
   const cache      = readCache();
@@ -740,12 +746,11 @@
   // 保存当前入口 IP，供下次步骤 2 比对
   if (curEnt) $persistentStore.write(curEnt, KEY.ENT);
 
-  // 本地查询、落地查询、入口预查询、体感探测互相独立，并发执行缩短总时间
+  // 本地查询、落地查询、入口预查询互相独立，并发执行缩短总时间
   const entranceGuess = curEnt ? queryEntranceInfo(curEnt) : Promise.resolve(null);
-  const [local, landing, probe, guessedEntrance] = await Promise.all([
+  const [local, landing, guessedEntrance] = await Promise.all([
     queryLocal(),
     queryLanding(),
-    queryProbe(),
     entranceGuess,
   ]);
 
@@ -766,10 +771,6 @@
     landing:   pickInfo(landing, old.landing, !nodeChanged && cacheStale),
     entrance:  pickInfo(entrance, old.entrance, sameEntrance && cacheStale),
     entranceIP: entranceIP || old.entranceIP || '',
-    probe: {
-      direct: Number.isFinite(probe?.direct) ? probe.direct : old.probe?.direct,
-      proxy:  Number.isFinite(probe?.proxy)  ? probe.proxy  : old.probe?.proxy,
-    },
   };
 
   // 兼容旧版只有 content、没有 data 的缓存
@@ -779,7 +780,7 @@
   }
 
   // ── 步骤 6：渲染面板内容，写入缓存，输出 ──────────────────────
-  const content = render(data, new Date(), Date.now() - startedAt);
+  const content = render(data, new Date());
   writeCache({ content, data, ts: Date.now() });
   $done({ title: '网络信息 Live', content });
 
