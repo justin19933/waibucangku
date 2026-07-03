@@ -1,7 +1,7 @@
 #!name=网络信息
-#!desc=本地 / 入口 / 落地 IP 信息面板，国旗路线 UI，自适应融合多源数据
+#!desc=本地 / 入口 / 落地 IP 信息面板，动态帧 + 分段延迟 v20260704-2
 [Script]
-网络信息 = type=generic,timeout=20,script-path=https://raw.githubusercontent.com/justin19933/waibucangku/main/network-info.js
+网络信息 = type=generic,timeout=20,script-path=https://raw.githubusercontent.com/justin19933/waibucangku/main/network-info.js?v=20260704-2
 
 [Panel]
 网络信息面板 = script-name=网络信息, update-interval=3
