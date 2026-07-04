@@ -105,6 +105,18 @@ function iplocation(sample) {
   };
 }
 
+function ipapico(sample) {
+  return {
+    ip: sample.ip,
+    country_code: sample.countryCode,
+    country_name: sample.country,
+    region: sample.region,
+    city: sample.city,
+    org: rawOrg(sample),
+    asn: sample.asn,
+  };
+}
+
 function ipipLocal() {
   return {
     ret: 'ok',
@@ -128,7 +140,9 @@ function uaiLocal() {
 
 function lookupIP(url) {
   const decoded = decodeURIComponent(url);
-  const m = decoded.match(/(?:json|geoip|ipwho\.is|ipinfo\.io)\/(\d{1,3}(?:\.\d{1,3}){3})/) || decoded.match(/[?&]ip=(\d{1,3}(?:\.\d{1,3}){3})/);
+  const m = decoded.match(/(?:json|geoip|ipwho\.is|ipinfo\.io)\/(\d{1,3}(?:\.\d{1,3}){3})/)
+    || decoded.match(/\/(\d{1,3}(?:\.\d{1,3}){3})(?:\/|$)/)
+    || decoded.match(/[?&]ip=(\d{1,3}(?:\.\d{1,3}){3})/);
   return m ? m[1] : '';
 }
 
@@ -143,6 +157,7 @@ function responseFor(opt, landing, entrance) {
   if (url === 'https://api-ipv4.ip.sb/geoip') return direct ? ipsb(LOCAL) : ipsb(landing);
   if (url === 'https://ipwho.is/') return direct ? ipwho(LOCAL) : ipwho(landing);
   if (url === 'https://ipinfo.io/json') return direct ? ipinfo(LOCAL) : ipinfo(landing);
+  if (url === 'https://ipapi.co/json/') return ipapico(landing);
 
   const ip = lookupIP(url);
   const sample = byIP.get(ip) || (ip === entrance.ip ? entrance : null);
@@ -152,12 +167,13 @@ function responseFor(opt, landing, entrance) {
   if (url.startsWith('https://api-ipv4.ip.sb/geoip/')) return ipsb(sample);
   if (url.startsWith('https://ipwho.is/')) return ipwho(sample);
   if (url.startsWith('https://ipinfo.io/')) return ipinfo(sample);
+  if (url.startsWith('https://ipapi.co/')) return ipapico(sample);
   if (url.startsWith('https://api.iplocation.net/')) return iplocation(sample);
 
   throw new Error(`Unhandled URL ${url}`);
 }
 
-function runPanel({ landing, entrance }) {
+function runPanel({ landing, entrance, initialEntrance = entrance }) {
   return new Promise((resolve, reject) => {
     const store = new Map();
     let apiCalls = 0;
@@ -167,7 +183,7 @@ function runPanel({ landing, entrance }) {
       return {
         requests: [{
           URL: apiCalls === 1 ? 'https://example.test/bootstrap' : 'https://api-ipv4.ip.sb/geoip',
-          remoteAddress: `${entrance.ip}:443 (Proxy)`,
+          remoteAddress: `${(apiCalls === 1 ? initialEntrance : entrance).ip}:443 (Proxy)`,
         }],
       };
     };
@@ -242,6 +258,17 @@ async function testDirect(sample) {
   }
 }
 
+async function testDirectWithStaleRecent(sample) {
+  const result = await runPanel({ landing: sample, entrance: sample, initialEntrance: ENTRY });
+  const content = result && result.content || '';
+  assertClean(sample, content);
+  assertLanding(sample, content);
+  if (content.includes('入口')) fail(sample, 'Direct route must ignore stale recent entrance and fold entrance', content);
+  if (!content.includes(`${flagOf(LOCAL.countryCode)}本地 → ${flagOf(sample.countryCode)}落地`)) {
+    fail(sample, 'Stale-recent direct route should still be 本地 -> 落地', content);
+  }
+}
+
 async function testTransit(sample) {
   const result = await runPanel({ landing: sample, entrance: ENTRY });
   const content = result && result.content || '';
@@ -258,9 +285,13 @@ async function testTransit(sample) {
 (async () => {
   if (corpus.length < 110) throw new Error(`Expected a broad corpus, got ${corpus.length}`);
   for (const sample of corpus) await testDirect(sample);
+  const staleDirectSamples = corpus
+    .filter(sample => sample.ip !== ENTRY.ip && /cn-cloud|hk-|asia-cloud/.test(sample.category))
+    .slice(0, 24);
+  for (const sample of staleDirectSamples) await testDirectWithStaleRecent(sample);
   const transitSamples = corpus.filter(sample => sample.ip !== ENTRY.ip).slice(0, 16);
   for (const sample of transitSamples) await testTransit(sample);
-  console.log(`PASS ${corpus.length} direct samples, ${transitSamples.length} transit samples`);
+  console.log(`PASS ${corpus.length} direct samples, ${staleDirectSamples.length} stale-direct samples, ${transitSamples.length} transit samples`);
 })().catch(error => {
   console.error(error.stack || error.message);
   process.exitCode = 1;

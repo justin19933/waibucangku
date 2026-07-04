@@ -326,9 +326,14 @@
     [/huawei|huaweicloud/i, '华为云'],
     [/baidu/i, '百度云'],
     [/ucloud/i, 'UCloud'],
+    [/qing\s*cloud|qingcloud|青云/i, '青云'],
     [/kingsoft/i, '金山云'],
     [/jd\s*cloud|jingdong/i, '京东云'],
     [/volcengine|bytedance/i, '火山引擎'],
+    [/ctyun|tianyi\s*cloud|天翼云|ecloud/i, '天翼云'],
+    [/mobile\s*cloud|cm\s*cloud|移动云/i, '移动云'],
+    [/unicom\s*cloud|wo\s*cloud|联通云/i, '联通云'],
+    [/wangsu|chinanetcenter|quantil/i, '网宿科技'],
     [/netease/i, '网易云'],
     [/chinacache/i, '蓝汛'],
     [/21vianet|vianet/i, '世纪互联'],
@@ -388,6 +393,27 @@
     [/scaleway|online\s+s\.?a\.?s/i, 'Scaleway'],
     [/proton/i, 'Proton'],
   ];
+  const TEXT_FIRST_ISP_ALIAS = [
+    [/aliyun|alibaba|ali\s*cloud/i, '阿里云'],
+    [/tencent|qcloud/i, '腾讯云'],
+    [/huawei|huaweicloud/i, '华为云'],
+    [/baidu/i, '百度云'],
+    [/ucloud/i, 'UCloud'],
+    [/kingsoft|ksyun/i, '金山云'],
+    [/jd\s*cloud|jdcloud|jingdong/i, '京东云'],
+    [/volcengine|bytedance/i, '火山引擎'],
+    [/netease/i, '网易云'],
+    [/ctyun|tianyi\s*cloud|天翼云|ecloud/i, '天翼云'],
+    [/mobile\s*cloud|cm\s*cloud|移动云/i, '移动云'],
+    [/unicom\s*cloud|wo\s*cloud|联通云/i, '联通云'],
+    [/qing\s*cloud|qingcloud|青云/i, '青云'],
+    [/wangsu|chinanetcenter|quantil/i, '网宿科技'],
+    [/chinacache/i, '蓝汛'],
+    [/21vianet|vianet/i, '世纪互联'],
+    [/baishan/i, '白山云'],
+    [/qiniu/i, '七牛云'],
+    [/upyun/i, '又拍云'],
+  ];
   const ASN_ALIAS = [
     [/AS4134\b/i, '中国电信'],
     [/AS4809\b/i, '中国电信 CN2'],
@@ -403,9 +429,12 @@
     [/AS55990\b|AS136907\b/i, '华为云'],
     [/AS38365\b|AS55967\b/i, '百度云'],
     [/AS135377\b/i, 'UCloud'],
+    [/AS138407\b|AS58854\b/i, '青云'],
     [/AS59019\b/i, '金山云'],
     [/AS137702\b/i, '京东云'],
     [/AS137718\b/i, '火山引擎'],
+    [/AS58542\b/i, '天翼云'],
+    [/AS17430\b|AS24400\b/i, '网宿科技'],
     [/AS58519\b/i, '网易云'],
     [/AS23650\b/i, '蓝汛'],
     [/AS58593\b/i, '世纪互联'],
@@ -484,6 +513,8 @@
     // 去括号 / 逗号 / 多余空格
     const cl  = s.replace(/\s*[\(\（][^\)\）]{0,30}[\)\）]\s*/g, ' ')
                   .replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+    const textFirstHit = TEXT_FIRST_ISP_ALIAS.find(([re]) => re.test(cl) || re.test(s));
+    if (textFirstHit) return textFirstHit[1];
     const asnHit = ASN_ALIAS.find(([re]) => re.test(cl) || re.test(s));
     if (asnHit) return asnHit[1];
     const hit = ISP_ALIAS.find(([re]) => re.test(cl) || re.test(s));
@@ -685,15 +716,40 @@
     };
   };
 
+  /**
+   * 解析 ipapi.co
+   * 用途：入口/落地的 HTTPS 备用源，补城市、ASN、组织名；限流或失败时自动忽略
+   * 响应格式：{ ip, country_code, country_name, region, city, org, asn }
+   */
+  const parseIPAPICO = d => {
+    if (!d?.ip || d.error) return null;
+    const countryCode = countryCodeOf(d.country_code, `${d.country_name || ''} ${d.region || ''} ${d.city || ''}`);
+    const rawISP = `${d.org || ''} ${d.asn || ''}`;
+    const inferred = inferGeoFromISP(rawISP);
+    const region = geoName(d.region || inferred.region || '');
+    const city = geoName(d.city || inferred.city || '');
+    return {
+      source:   'ipapico',
+      ip:       d.ip,
+      countryCode,
+      country:  hasCN(d.country_name) ? d.country_name : countryName(countryCode) || d.country_name || '',
+      region,
+      city,
+      location: fmtLoc(countryCode, d.country_name, region, city),
+      isp:      fmtISP(rawISP),
+      asn:      fmtASN(d.asn),
+    };
+  };
+
   const mergeInfo = (...items) => {
     const list = items.filter(Boolean);
     if (!list.length) return null;
     const pick = key => list.find(x => x?.[key])?.[key] || '';
     const SRC = {
-      country: { ipwho: 100, iplocation: 90, ipinfo: 88, ipapi: 80, ipip: 78, uai: 78, ipsb: 55 },
-      geo:     { ipwho: 100, ipip: 94, uai: 90, ipinfo: 86, ipapi: 82, ipsb: 58, iplocation: 42 },
-      isp:     { ipwho: 96,  ipip: 92, uai: 88, ipsb: 84, ipapi: 80, iplocation: 78, ipinfo: 76 },
-      asn:     { ipwho: 96,  ipsb: 92, ipapi: 86, ipinfo: 82, ipip: 0,  uai: 0, iplocation: 0 },
+      country: { ipwho: 100, iplocation: 90, ipinfo: 88, ipapico: 86, ipapi: 80, ipip: 78, uai: 78, ipsb: 55 },
+      geo:     { ipwho: 100, ipip: 94, uai: 90, ipapico: 88, ipinfo: 86, ipapi: 82, ipsb: 58, iplocation: 42 },
+      isp:     { ipwho: 96,  ipip: 92, uai: 88, ipapico: 86, ipsb: 84, ipapi: 80, iplocation: 78, ipinfo: 76 },
+      asn:     { ipwho: 96,  ipsb: 92, ipapico: 90, ipapi: 86, ipinfo: 82, ipip: 0,  uai: 0, iplocation: 0 },
     };
     const srcScore = (item, type) => SRC[type]?.[item?.source] ?? 40;
     const joined = item => compact([item?.country, item?.region, item?.city, item?.location]).join(' ');
@@ -792,6 +848,7 @@
       ['https://api-ipv4.ip.sb/geoip', parseIPSB, {}, CFG.T_PROXY],
       ['https://ipwho.is/', parseIPWHO, {}, CFG.T_PROXY],
       ['https://ipinfo.io/json', parseIPInfo, {}, CFG.T_PROXY],
+      ['https://ipapi.co/json/', parseIPAPICO, {}, CFG.T_PROXY],
     ], mergeInfo);
   }
 
@@ -806,6 +863,7 @@
       [`https://api-ipv4.ip.sb/geoip/${safeIP}`, parseIPSB, { policy: 'DIRECT' }],
       [`https://ipwho.is/${safeIP}`, parseIPWHO, { policy: 'DIRECT' }],
       [`https://ipinfo.io/${safeIP}/json`, parseIPInfo, { policy: 'DIRECT' }],
+      [`https://ipapi.co/${safeIP}/json/`, parseIPAPICO, { policy: 'DIRECT' }],
       [`https://api.iplocation.net/?ip=${safeIP}`, parseIPLocation, { policy: 'DIRECT' }],
     ], mergeInfo);
   }
@@ -999,10 +1057,10 @@
   ]);
 
   // ── 步骤 5：落地查询完成后重读记录，提取入口 IP ────────────────
-  // queryLanding 向 ip.sb 发了一条代理请求，此时再读记录可以找到该请求的 remoteAddress
+  // queryLanding 发出的代理查询最能代表当前节点；直连机时该 remoteAddress 会等于落地 IP
   // 即入口代理服务器的 IP，从而得到"入口"信息
   const reqs2    = await getSurgeReqs();
-  const entIP    = findProxyIP(reqs2, { limit: 100, urlRE: /ip\.sb|ipinfo\.io/, excludeIP: landing?.ip || '' });
+  const entIP    = findProxyIP(reqs2, { limit: 100, urlRE: /ip\.sb|ipinfo\.io|ipwho\.is|ip-api\.com/ });
   const entranceIP = entIP || curEnt || '';
   const entrance = entranceIP
     ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP))
