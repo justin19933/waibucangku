@@ -22,6 +22,9 @@ const LOCAL = {
 
 const ENTRY = corpus.find(item => item.ip === '47.102.107.249');
 if (!ENTRY) throw new Error('Fixture must include transit entrance 47.102.107.249');
+const GOMAMI_HK = corpus.find(item => item.ip === '191.101.132.8');
+const PCCW_HK = corpus.find(item => item.ip === '116.48.39.172');
+if (!GOMAMI_HK || !PCCW_HK) throw new Error('Fixture must include the Hong Kong same-metro regression pair');
 
 const byIP = new Map([[LOCAL.ip, LOCAL], ...corpus.map(item => [item.ip, item])]);
 
@@ -282,6 +285,20 @@ async function testTransit(sample) {
   if (!content.includes(route)) fail(sample, `Transit route should be ${route}`, content);
 }
 
+async function testSameMetroExitPair() {
+  const result = await runPanel({ landing: PCCW_HK, entrance: GOMAMI_HK });
+  const content = result && result.content || '';
+  assertClean(PCCW_HK, content);
+  assertLanding(PCCW_HK, content);
+  if (content.includes('入口')) fail(PCCW_HK, 'Same-metro Hong Kong connection/exit pair should fold entrance', content);
+  if (!content.includes(`${flagOf(LOCAL.countryCode)}本地 → ${flagOf(PCCW_HK.countryCode)}落地`)) {
+    fail(PCCW_HK, 'Same-metro Hong Kong pair should route 本地 -> 落地', content);
+  }
+  if (!content.includes('PCCW') || !content.includes('AS4760')) {
+    fail(PCCW_HK, 'Folded landing should preserve PCCW AS4760 exit details', content);
+  }
+}
+
 (async () => {
   if (corpus.length < 110) throw new Error(`Expected a broad corpus, got ${corpus.length}`);
   for (const sample of corpus) await testDirect(sample);
@@ -289,9 +306,13 @@ async function testTransit(sample) {
     .filter(sample => sample.ip !== ENTRY.ip && /cn-cloud|hk-|asia-cloud/.test(sample.category))
     .slice(0, 24);
   for (const sample of staleDirectSamples) await testDirectWithStaleRecent(sample);
-  const transitSamples = corpus.filter(sample => sample.ip !== ENTRY.ip).slice(0, 16);
+  const transitSamples = corpus
+    .filter(sample => sample.ip !== ENTRY.ip)
+    .filter(sample => sample.countryCode !== ENTRY.countryCode || sample.region !== ENTRY.region || sample.city !== ENTRY.city)
+    .slice(0, 16);
   for (const sample of transitSamples) await testTransit(sample);
-  console.log(`PASS ${corpus.length} direct samples, ${staleDirectSamples.length} stale-direct samples, ${transitSamples.length} transit samples`);
+  await testSameMetroExitPair();
+  console.log(`PASS ${corpus.length} direct samples, ${staleDirectSamples.length} stale-direct samples, ${transitSamples.length} transit samples, 1 same-metro pair`);
 })().catch(error => {
   console.error(error.stack || error.message);
   process.exitCode = 1;

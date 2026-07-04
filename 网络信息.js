@@ -231,6 +231,10 @@
     singapore: '新加坡',
     hongkong: '香港',
     'hong kong': '香港',
+    'quarry bay': '鲗鱼涌',
+    '鰂魚涌': '鲗鱼涌',
+    '鲫鱼涌': '鲗鱼涌',
+    '鲗鱼涌': '鲗鱼涌',
     macau: '澳门',
     macao: '澳门',
     taiwan: '台湾',
@@ -342,6 +346,7 @@
     [/qiniu/i, '七牛云'],
     [/upyun/i, '又拍云'],
     [/oriental\s+cable|shanghai\s+oriental/i, '东方有线'],
+    [/gomami/i, 'GoMami'],
     [/dmit/i, 'DMIT'],
     [/bandwagon|it7/i, '搬瓦工'],
     [/xtom/i, 'xTom'],
@@ -443,8 +448,9 @@
     [/AS134963\b/i, '七牛云'],
     [/AS134967\b/i, '又拍云'],
     [/AS132110\b/i, 'DMIT'],
+    [/AS36002\b/i, 'GoMami'],
     [/AS9312\b/i, 'xTom'],
-    [/AS3491\b/i, 'PCCW'],
+    [/AS3491\b|AS4760\b/i, 'PCCW'],
     [/AS9269\b/i, 'HKBN'],
     [/AS9304\b/i, 'HGC'],
     [/AS21859\b/i, 'Zenlayer'],
@@ -904,6 +910,24 @@
     const x = norm(a), y = norm(b);
     return !!(x && y && x === y);
   };
+  const sameMetroRoute = (entranceInfo, landingInfo) => {
+    const e = normalizeInfo(entranceInfo);
+    const l = normalizeInfo(landingInfo);
+    const eCode = countryCodeOf(e?.countryCode, compact([e?.country, e?.location]).join(' '));
+    const lCode = countryCodeOf(l?.countryCode, compact([l?.country, l?.location]).join(' '));
+    if (!e?.ip || !l?.ip || !eCode || eCode !== lCode) return false;
+    if (sameIP(e.ip, l.ip)) return true;
+    const normPlace = v => geoName(v).replace(/\s+/g, '').toLowerCase();
+    const eRegion = normPlace(e.region || '');
+    const lRegion = normPlace(l.region || '');
+    const eCity = normPlace(e.city || '');
+    const lCity = normPlace(l.city || '');
+    const regionSame = !!(eRegion && lRegion && eRegion === lRegion);
+    const citySame = !!(eCity && lCity && eCity === lCity);
+    if (/^(HK|MO|SG)$/.test(eCode)) return regionSame || citySame || /香港|澳门|新加坡/.test(`${e.location}${l.location}`);
+    if (eCode === 'CN') return regionSame && (!eCity || !lCity || citySame);
+    return citySame || (regionSame && !!eCity === !!lCity);
+  };
 
   // ══════════════════════════════════════════════════════
   //  CACHE  缓存层
@@ -942,6 +966,23 @@
     if (live) return { info: live, cached: false };
     const old = allowCache ? normalizeInfo(cached) : null;
     return old ? { info: old, cached: true } : { info: null, cached: false };
+  };
+  const fillInfo = (primary, fallback) => {
+    const p = normalizeInfo(primary);
+    const f = normalizeInfo(fallback);
+    if (!p) return f;
+    if (!f) return p;
+    return {
+      ip:       p.ip || f.ip,
+      countryCode: p.countryCode || f.countryCode,
+      country:  p.country || f.country,
+      region:   p.region || f.region,
+      city:     p.city || f.city,
+      location: p.location || f.location,
+      isp:      p.isp || f.isp,
+      asn:      p.asn || f.asn,
+      ms:       Number.isFinite(p.ms) ? p.ms : f.ms,
+    };
   };
 
   // ══════════════════════════════════════════════════════
@@ -1065,8 +1106,10 @@
   const entrance = entranceIP
     ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP))
     : null;
-  const directRoute = sameIP(entranceIP, landing?.ip);
-  const landingFinal = directRoute ? mergeInfo(landing, entrance) : landing;
+  const sameAddressRoute = sameIP(entranceIP, landing?.ip);
+  const sameMetroExitRoute = !sameAddressRoute && sameMetroRoute(entrance, landing);
+  const directRoute = sameAddressRoute || sameMetroExitRoute;
+  const landingFinal = sameAddressRoute ? mergeInfo(landing, entrance) : (sameMetroExitRoute ? fillInfo(landing, entrance) : landing);
 
   const old = cache.data || {};
   const sameEntrance = !directRoute && !!(entranceIP && old.entranceIP === entranceIP);
