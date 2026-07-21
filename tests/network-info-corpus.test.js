@@ -4,7 +4,14 @@ const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const script = fs.readFileSync(path.join(root, 'network-info.js'), 'utf8');
+const chineseScript = fs.readFileSync(path.join(root, '网络信息.js'), 'utf8');
+const liveScript = fs.readFileSync(path.join(root, 'network-info-live-v2.js'), 'utf8');
 const corpus = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'ip-corpus.json'), 'utf8'));
+
+if (chineseScript !== script) throw new Error('网络信息.js must match network-info.js');
+if (liveScript.replaceAll('网络信息 Live', '网络信息') !== script) {
+  throw new Error('network-info-live-v2.js may only differ by its panel title');
+}
 
 const LOCAL = {
   name: 'Local Sichuan Telecom',
@@ -24,7 +31,10 @@ const ENTRY = corpus.find(item => item.ip === '47.102.107.249');
 if (!ENTRY) throw new Error('Fixture must include transit entrance 47.102.107.249');
 const GOMAMI_HK = corpus.find(item => item.ip === '191.101.132.8');
 const PCCW_HK = corpus.find(item => item.ip === '116.48.39.172');
+const CLOUDFLARE_LA = corpus.find(item => item.ip === '1.1.1.1');
+const GOOGLE_MOUNTAIN_VIEW = corpus.find(item => item.ip === '8.8.8.8');
 if (!GOMAMI_HK || !PCCW_HK) throw new Error('Fixture must include the Hong Kong same-metro regression pair');
+if (!CLOUDFLARE_LA || !GOOGLE_MOUNTAIN_VIEW) throw new Error('Fixture must include the California different-city pair');
 
 const byIP = new Map([[LOCAL.ip, LOCAL], ...corpus.map(item => [item.ip, item])]);
 
@@ -176,7 +186,7 @@ function responseFor(opt, landing, entrance) {
   throw new Error(`Unhandled URL ${url}`);
 }
 
-function runPanel({ landing, entrance, initialEntrance = entrance }) {
+function runPanel({ landing, entrance, initialEntrance = entrance, responseTransform = null }) {
   return new Promise((resolve, reject) => {
     const store = new Map();
     let apiCalls = 0;
@@ -205,7 +215,8 @@ function runPanel({ landing, entrance, initialEntrance = entrance }) {
       $httpClient: {
         get: (opt, cb) => {
           try {
-            cb(null, { status: 200 }, JSON.stringify(responseFor(opt, landing, entrance)));
+            const response = responseFor(opt, landing, entrance);
+            cb(null, { status: 200 }, JSON.stringify(responseTransform ? responseTransform(opt, response) : response));
           } catch (error) {
             cb(error);
           }
@@ -299,6 +310,33 @@ async function testSameMetroExitPair() {
   }
 }
 
+async function testDifferentCityPair() {
+  const result = await runPanel({ landing: GOOGLE_MOUNTAIN_VIEW, entrance: CLOUDFLARE_LA });
+  const content = result && result.content || '';
+  assertClean(GOOGLE_MOUNTAIN_VIEW, content);
+  assertLanding(GOOGLE_MOUNTAIN_VIEW, content);
+  if (!content.includes('入口')) {
+    fail(GOOGLE_MOUNTAIN_VIEW, '同州不同城市不能折叠入口', content);
+  }
+}
+
+async function testConflictingSourceIP() {
+  const result = await runPanel({
+    landing: GOOGLE_MOUNTAIN_VIEW,
+    entrance: GOOGLE_MOUNTAIN_VIEW,
+    responseTransform: (opt, response) => {
+      const url = typeof opt === 'string' ? opt : opt.url;
+      const direct = opt && opt.policy === 'DIRECT';
+      return url === 'https://ipwho.is/' && !direct ? ipwho(ENTRY) : response;
+    },
+  });
+  const content = result && result.content || '';
+  assertLanding(GOOGLE_MOUNTAIN_VIEW, content);
+  if (content.includes(ENTRY.asn) || content.includes('上海')) {
+    fail(GOOGLE_MOUNTAIN_VIEW, '其他 IP 的数据源结果不得污染落地信息', content);
+  }
+}
+
 (async () => {
   if (corpus.length < 110) throw new Error(`Expected a broad corpus, got ${corpus.length}`);
   for (const sample of corpus) await testDirect(sample);
@@ -312,7 +350,9 @@ async function testSameMetroExitPair() {
     .slice(0, 16);
   for (const sample of transitSamples) await testTransit(sample);
   await testSameMetroExitPair();
-  console.log(`PASS ${corpus.length} direct samples, ${staleDirectSamples.length} stale-direct samples, ${transitSamples.length} transit samples, 1 same-metro pair`);
+  await testDifferentCityPair();
+  await testConflictingSourceIP();
+  console.log(`PASS ${corpus.length} direct samples, ${staleDirectSamples.length} stale-direct samples, ${transitSamples.length} transit samples, 3 regressions`);
 })().catch(error => {
   console.error(error.stack || error.message);
   process.exitCode = 1;

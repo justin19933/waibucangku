@@ -15,10 +15,12 @@
     T_PROXY:   5,
     // 每个数据源的最大重试次数（正式请求 + RETRIES 次重试）
     RETRIES:   1,
+    // 一次面板刷新的总网络预算，需低于 Surge 模块的 20 秒超时
+    REQUEST_BUDGET: 15000,
     // 首个数据源成功后，额外等待更优字段的时间（毫秒）
     SMART_GRACE: 900,
-    // 查询结果缓存有效期：2.5 秒；节点切换时会尽快刷新
-    CACHE_TTL: 2500,
+    // 节点变化会主动使缓存失效，无变化时减少频繁的外部 API 请求
+    CACHE_TTL: 15000,
     // 刷新失败时最多沿用 1 小时内的旧结果，避免好面板被空结果覆盖
     STALE_TTL: 3600000,
   };
@@ -39,11 +41,23 @@
   /**
    * 基础 HTTP GET，返回响应体字符串；失败则抛出错误
    */
-  const httpGet = opt => new Promise((res, rej) =>
+  const httpGet = (opt, deadline = Infinity) => new Promise((res, rej) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn(value);
+    };
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return rej(new Error('请求预算已用尽'));
+    const timer = Number.isFinite(remaining)
+      ? setTimeout(() => finish(rej, new Error('请求预算已用尽')), remaining)
+      : null;
     $httpClient.get(opt, (err, _, body) =>
-      err ? rej(new Error(`网络请求失败: ${err}`)) : res(body)
-    )
-  );
+      err ? finish(rej, new Error(`网络请求失败: ${err}`)) : finish(res, body)
+    );
+  });
 
   /**
    * GET + JSON 解析
@@ -53,10 +67,10 @@
    * 注意：ip-api.com 免费版仅支持 HTTP，无法改用 HTTPS（服务商限制）
    * 通过第三个本地源（ip.useragentinfo.com）和重试来弥补 HTTP 偶发劫持问题
    */
-  const fetchJSON = async (url, opt = {}, timeout = CFG.T_DIRECT) => {
+  const fetchJSON = async (url, opt = {}, timeout = CFG.T_DIRECT, deadline = Infinity) => {
     try {
       const started = Date.now();
-      const body = await httpGet({ url, timeout, ...opt });
+      const body = await httpGet({ url, timeout, ...opt }, deadline);
       return { data: JSON.parse(body), ms: Date.now() - started };
     } catch {
       return null; // 网络错误 / 解析错误 / 内容异常，统一返回 null
@@ -68,16 +82,16 @@
    * 单次失败后等 500ms 再试，最多重试 CFG.RETRIES 次
    * 弱网下单次超时较常见，一次重试可显著提升成功率
    */
-  const fetchWithRetry = async (url, opt = {}, timeout = CFG.T_DIRECT) => {
+  const fetchWithRetry = async (url, opt = {}, timeout = CFG.T_DIRECT, deadline = Infinity) => {
     for (let i = 0; i <= CFG.RETRIES; i++) {
-      const result = await fetchJSON(url, opt, timeout);
+      const result = await fetchJSON(url, opt, timeout, deadline);
       if (result !== null) return result;
-      if (i < CFG.RETRIES) await new Promise(r => setTimeout(r, 500));
+      if (i < CFG.RETRIES && deadline - Date.now() > 500) await new Promise(r => setTimeout(r, 500));
     }
     return null; // 重试耗尽，确认失败
   };
 
-  const smartFetch = (sources, merge, grace = CFG.SMART_GRACE) => new Promise(resolve => {
+  const smartFetch = (sources, merge, grace = CFG.SMART_GRACE, deadline = Infinity) => new Promise(resolve => {
     const results = [];
     let left = sources.length;
     let done = false;
@@ -111,7 +125,7 @@
       if (left === 0) finish(true);
     };
     sources.forEach(([url, parser, opt = {}, timeout = CFG.T_DIRECT]) => {
-      fetchWithRetry(url, opt, timeout)
+      fetchWithRetry(url, opt, timeout, deadline)
         .then(d => {
           const parsed = d ? parser(d.data) : null;
           if (parsed) {
@@ -748,7 +762,22 @@
   };
 
   const mergeInfo = (...items) => {
-    const list = items.filter(Boolean);
+    const all = items.filter(Boolean);
+    if (!all.length) return null;
+    const ipKey = value => String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    const sourceTrust = { ipwho: 100, ipsb: 95, ipapico: 90, ipinfo: 85, ipip: 80, uai: 80, ipapi: 70, iplocation: 65 };
+    const groups = new Map();
+    for (const item of all) {
+      const key = ipKey(item.ip);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    const list = [...groups.values()].sort((a, b) => {
+      if (b.length !== a.length) return b.length - a.length;
+      const trust = group => Math.max(...group.map(item => sourceTrust[item.source] || 0));
+      return trust(b) - trust(a);
+    })[0] || [];
     if (!list.length) return null;
     const pick = key => list.find(x => x?.[key])?.[key] || '';
     const SRC = {
@@ -832,7 +861,7 @@
    * 容错：只要有 1 个来源成功，就能保证至少显示 IP；多个来源会字段级补全
    *        只有所有来源全部失败才返回 null（概率极低）
    */
-  async function queryLocal() {
+  async function queryLocal(deadline) {
     return smartFetch([
       ['https://myip.ipip.net/json', parseIPIP, { policy: 'DIRECT' }],
       ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as', parseIPAPI, { policy: 'DIRECT' }],
@@ -840,7 +869,7 @@
       ['https://api-ipv4.ip.sb/geoip', parseIPSB, { policy: 'DIRECT' }],
       ['https://ipwho.is/', parseIPWHO, { policy: 'DIRECT' }],
       ['https://ipinfo.io/json', parseIPInfo, { policy: 'DIRECT' }],
-    ], mergeInfo);
+    ], mergeInfo, CFG.SMART_GRACE, deadline);
   }
 
   /**
@@ -848,21 +877,21 @@
    *
    * 此处 ip.sb / ipinfo.io 都走代理路由，与 queryLocal 的直连查询完全独立
    */
-  async function queryLanding() {
+  async function queryLanding(deadline) {
     return smartFetch([
       ['http://ip-api.com/json/?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as', parseIPAPI, {}, CFG.T_PROXY],
       ['https://api-ipv4.ip.sb/geoip', parseIPSB, {}, CFG.T_PROXY],
       ['https://ipwho.is/', parseIPWHO, {}, CFG.T_PROXY],
       ['https://ipinfo.io/json', parseIPInfo, {}, CFG.T_PROXY],
       ['https://ipapi.co/json/', parseIPAPICO, {}, CFG.T_PROXY],
-    ], mergeInfo);
+    ], mergeInfo, CFG.SMART_GRACE, deadline);
   }
 
   /**
    * 查询入口 IP 的位置/运营商信息（直连，因为入口 IP 是代理服务器的公网 IP）
    * ip-api.com / ip.sb 并发查询，优先采用 ip-api 的中文化结果
    */
-  async function queryEntranceInfo(ip) {
+  async function queryEntranceInfo(ip, deadline) {
     const safeIP = encodeURIComponent(ip);
     return smartFetch([
       [`http://ip-api.com/json/${safeIP}?lang=zh-CN&fields=status,query,country,countryCode,regionName,city,isp,org,asname,as`, parseIPAPI, { policy: 'DIRECT' }],
@@ -871,7 +900,7 @@
       [`https://ipinfo.io/${safeIP}/json`, parseIPInfo, { policy: 'DIRECT' }],
       [`https://ipapi.co/${safeIP}/json/`, parseIPAPICO, { policy: 'DIRECT' }],
       [`https://api.iplocation.net/?ip=${safeIP}`, parseIPLocation, { policy: 'DIRECT' }],
-    ], mergeInfo);
+    ], mergeInfo, CFG.SMART_GRACE, deadline);
   }
 
   // ══════════════════════════════════════════════════════
@@ -926,12 +955,12 @@
     const citySame = !!(eCity && lCity && eCity === lCity);
     if (/^(HK|MO|SG)$/.test(eCode)) return regionSame || citySame || /香港|澳门|新加坡/.test(`${e.location}${l.location}`);
     if (eCode === 'CN') return regionSame && (!eCity || !lCity || citySame);
-    return citySame || (regionSame && !!eCity === !!lCity);
+    return citySame || (regionSame && !eCity && !lCity);
   };
 
   // ══════════════════════════════════════════════════════
   //  CACHE  缓存层
-  //  结果缓存 30 秒，配合入口 IP 变化检测实现节点变化自动刷新
+  //  结果缓存 15 秒，配合入口 IP 变化检测实现节点变化自动刷新
   //  - 缓存有效且节点未变：直接返回缓存，零网络请求（毫秒级响应）
   //  - 缓存过期或节点变化：触发全量刷新，更新缓存
   // ══════════════════════════════════════════════════════
@@ -1090,10 +1119,11 @@
   if (curEnt) $persistentStore.write(curEnt, KEY.ENT);
 
   // 本地查询、落地查询、入口预查询互相独立，并发执行缩短总时间
-  const entranceGuess = curEnt ? queryEntranceInfo(curEnt) : Promise.resolve(null);
+  const requestDeadline = Date.now() + CFG.REQUEST_BUDGET;
+  const entranceGuess = curEnt ? queryEntranceInfo(curEnt, requestDeadline) : Promise.resolve(null);
   const [local, landing, guessedEntrance] = await Promise.all([
-    queryLocal(),
-    queryLanding(),
+    queryLocal(requestDeadline),
+    queryLanding(requestDeadline),
     entranceGuess,
   ]);
 
@@ -1104,7 +1134,7 @@
   const entIP    = findProxyIP(reqs2, { limit: 100, urlRE: /ip\.sb|ipinfo\.io|ipwho\.is|ip-api\.com/ });
   const entranceIP = entIP || curEnt || '';
   const entrance = entranceIP
-    ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP))
+    ? (entranceIP === curEnt ? guessedEntrance : await queryEntranceInfo(entranceIP, requestDeadline))
     : null;
   const sameAddressRoute = sameIP(entranceIP, landing?.ip);
   const sameMetroExitRoute = !sameAddressRoute && sameMetroRoute(entrance, landing);
